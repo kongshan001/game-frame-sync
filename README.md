@@ -8,6 +8,7 @@
 ## 目录
 
 - [项目简介](#项目简介)
+- [核心概念：定点数](#核心概念定点数)
 - [系统架构](#系统架构)
 - [核心类关系图](#核心类关系图)
 - [类职责与API文档](#类职责与api文档)
@@ -38,6 +39,260 @@
 - ✅ 断线重连
 - ✅ 安全性防护（速率限制、输入验证）
 - ✅ 性能优化（空间网格碰撞检测）
+
+---
+
+## 核心概念：定点数
+
+### 为什么需要定点数？
+
+帧同步的核心要求是**确定性**：所有客户端在相同输入下必须产生完全相同的结果。
+
+然而，**浮点数（float）在不同平台上可能产生不同结果**：
+
+```python
+# 问题：浮点数的不确定性
+a = 0.1 + 0.2  # 可能是 0.30000000000000004
+b = 0.3        # 可能是 0.29999999999999999
+
+# 不同 CPU 架构可能有细微差异
+# x86 vs ARM 可能有不同的舍入行为
+# 这会导致帧同步状态分叉！
+```
+
+**解决方案：使用定点数（Fixed-Point Number）**
+
+### 什么是定点数？
+
+定点数是用**整数**来表示小数的方法。通过将所有数值放大固定倍数，用整数运算替代浮点运算。
+
+```
+浮点数: 100.5
+定点数: 100.5 * 65536 = 6586368 (整数)
+```
+
+### 定点数格式：16.16
+
+本项目采用 **16.16 定点数格式**：
+
+```
+32位整数 = 16位整数部分 + 16位小数部分
+
+┌────────────────┬────────────────┐
+│   整数部分      │   小数部分      │
+│   16 bits      │   16 bits      │
+└────────────────┴────────────────┘
+     高16位           低16位
+
+范围: -32768.9999... ~ 32767.9999...
+精度: 1/65536 ≈ 0.000015
+```
+
+### 定点数运算
+
+#### 基本转换
+
+```python
+class FixedPoint:
+    SCALE = 65536  # 2^16
+    
+    # 浮点数 → 定点数
+    @staticmethod
+    def from_float(value: float) -> int:
+        return int(value * 65536)
+    
+    # 定点数 → 浮点数
+    @staticmethod
+    def to_float(value: int) -> float:
+        return value / 65536
+    
+    # 定点数 → 整数（截断小数）
+    @staticmethod
+    def to_int(value: int) -> int:
+        return value >> 16  # 等于 value // 65536
+```
+
+#### 加减法
+
+定点数加减法与整数相同：
+
+```python
+# 加法
+result = a + b
+
+# 减法
+result = a - b
+
+# 示例
+# 100.5 + 50.25 = ?
+# 定点数: 6586368 + 3287040 = 9873408
+# 转换回浮点: 9873408 / 65536 = 150.75 ✓
+```
+
+#### 乘法
+
+乘法需要右移 16 位（因为两个 SCALE 相乘）：
+
+```python
+# 乘法
+def mul(a: int, b: int) -> int:
+    return (a * b) >> 16
+
+# 示例
+# 2.0 * 3.0 = ?
+# 定点数: (131072 * 196608) >> 16 = 25769803776 >> 16 = 393216
+# 转换回浮点: 393216 / 65536 = 6.0 ✓
+```
+
+#### 除法
+
+除法需要先左移 16 位：
+
+```python
+# 除法
+def div(a: int, b: int) -> int:
+    return (a << 16) // b
+
+# 示例
+# 6.0 / 2.0 = ?
+# 定点数: (393216 << 16) // 131072 = 25769803776 // 131072 = 196608
+# 转换回浮点: 196608 / 65536 = 3.0 ✓
+```
+
+### 项目中的应用
+
+#### Entity 类的定点数实现
+
+```python
+@dataclass
+class Entity:
+    entity_id: int
+    x: int = 0      # 定点数坐标
+    y: int = 0
+    vx: int = 0     # 定点数速度
+    vy: int = 0
+    
+    FIXED_SHIFT = 16
+    FIXED_SCALE = 65536
+    
+    @classmethod
+    def from_float(cls, entity_id: int, x: float, y: float) -> 'Entity':
+        """从浮点数创建"""
+        return cls(
+            entity_id=entity_id,
+            x=int(x * cls.FIXED_SCALE),
+            y=int(y * cls.FIXED_SCALE)
+        )
+    
+    def to_float(self) -> Tuple[float, float]:
+        """转换为浮点数"""
+        return (self.x / self.FIXED_SCALE, self.y / self.FIXED_SCALE)
+    
+    def update_position(self, dt_ms: int):
+        """更新位置（整数运算）"""
+        # v * dt / 1000
+        self.x += (self.vx * dt_ms) // 1000
+        self.y += (self.vy * dt_ms) // 1000
+```
+
+#### 物理引擎的定点数常量
+
+```python
+class PhysicsEngine:
+    # 物理常量（定点数）
+    GRAVITY = 980 << 16      # 980 像素/秒²
+    FRICTION = 58982         # 0.9 的定点数 (0.9 * 65536 ≈ 58982)
+    MAX_VELOCITY = 1000 << 16
+    
+    def update(self, dt_ms: int):
+        for entity in self.entities.values():
+            # 应用重力（定点数运算）
+            entity.vy += (self.GRAVITY * dt_ms) // 1000
+            
+            # 应用摩擦力（定点数乘法）
+            entity.vx = (entity.vx * self.FRICTION) >> 16
+```
+
+### 定点数 vs 浮点数对比
+
+| 特性 | 浮点数 | 定点数 |
+|------|--------|--------|
+| 精度 | 可变（科学计数法） | 固定（小数点后4-5位） |
+| 范围 | 很大（±10^308） | 有限（±32768） |
+| 跨平台一致性 | ❌ 不保证 | ✅ 完全一致 |
+| 运算速度 | 较慢（FPU） | 较快（整数） |
+| 适用场景 | 通用计算 | 帧同步、嵌入式 |
+
+### 定点数精度示例
+
+```python
+# 精度测试
+x = 100.123456789
+
+# 16.16 定点数
+fixed_x = int(x * 65536)           # 6568085
+restored = fixed_x / 65536          # 100.12345886230469
+
+# 精度损失：约 0.000001
+# 对于游戏物理模拟足够精确
+```
+
+### 常用定点数工具函数
+
+```python
+# 平方根（整数近似）
+def isqrt(n: int) -> int:
+    """整数平方根"""
+    if n < 0:
+        return 0
+    if n == 0:
+        return 0
+    
+    x = n
+    y = (x + 1) // 2
+    while y < x:
+        x = y
+        y = (x + n // x) // 2
+    return x
+
+# 定点数平方根
+def sqrt_fixed(n: int) -> int:
+    """定点数平方根"""
+    return isqrt(n) << 8  # 结果也需缩放
+
+# 定点数距离
+def distance_fixed(x1: int, y1: int, x2: int, y2: int) -> int:
+    """计算两点距离（定点数）"""
+    dx = x2 - x1
+    dy = y2 - y1
+    dist_sq = (dx * dx + dy * dy) >> 16
+    return isqrt(dist_sq)
+
+# 三角函数（查表法）
+SIN_TABLE = [int(math.sin(i * math.pi / 180) * 65536) for i in range(360)]
+
+def sin_fixed(angle: int) -> int:
+    """定点数正弦（angle: 度）"""
+    angle = angle % 360
+    return SIN_TABLE[angle]
+
+def cos_fixed(angle: int) -> int:
+    """定点数余弦"""
+    return sin_fixed(angle + 90)
+```
+
+### 注意事项
+
+1. **避免溢出**：16.16 格式最大值约 32768，注意中间计算结果
+2. **精度损失**：多次运算会累积误差，定期校验状态哈希
+3. **序列化**：定点数可直接序列化为整数，无需特殊处理
+4. **调试**：开发时用 `to_float()` 查看实际值
+
+### 参考资源
+
+- [Fixed-Point Arithmetic](https://en.wikipedia.org/wiki/Fixed-point_arithmetic)
+- [Game Programming Gems: Fixed Point Math](https://books.google.com/books?id=6TIAQAAAIAAJ)
+- [ Doom 定点数实现](https://github.com/id-Software/DOOM/blob/master/linuxdoom-1.10/m_fixed.c)
 
 ---
 
