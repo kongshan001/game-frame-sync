@@ -56,6 +56,14 @@ class FrameBuffer:
             player_id: 玩家ID
             input_data: 输入数据（二进制）
         """
+        # 验证输入
+        if frame_id < 0:
+            return
+        if not isinstance(input_data, bytes):
+            return
+        if len(input_data) > 1024:  # 限制输入大小
+            return
+            
         if frame_id not in self.pending_inputs:
             self.pending_inputs[frame_id] = {}
         self.pending_inputs[frame_id][player_id] = input_data
@@ -155,7 +163,7 @@ class FrameEngine:
         self.buffer_size = buffer_size
         self.frame_buffer = FrameBuffer(buffer_size)
         self.current_frame = 0
-        self.frame_history: List[Frame] = []
+        self.frame_history: Dict[int, Frame] = {}  # 修复：使用字典而非列表
         self.max_history = 300  # 保留最近10秒（30fps）
     
     def add_input(self, frame_id: int, player_id: int, input_data: bytes):
@@ -184,9 +192,13 @@ class FrameEngine:
         )
         
         if frame:
-            self.frame_history.append(frame)
-            if len(self.frame_history) > self.max_history:
-                self.frame_history.pop(0)
+            self.frame_history[frame.frame_id] = frame  # 修复：使用 frame_id 作为 key
+            
+            # 清理旧历史
+            oldest = self.current_frame - self.max_history
+            for fid in list(self.frame_history.keys()):
+                if fid < oldest:
+                    del self.frame_history[fid]
             
             self.current_frame += 1
             return frame
@@ -215,9 +227,13 @@ class FrameEngine:
             confirmed=False  # 强制帧未完全确认
         )
         
-        self.frame_history.append(frame)
-        if len(self.frame_history) > self.max_history:
-            self.frame_history.pop(0)
+        self.frame_history[frame.frame_id] = frame  # 修复：使用 frame_id 作为 key
+        
+        # 清理旧历史
+        oldest = self.current_frame - self.max_history
+        for fid in list(self.frame_history.keys()):
+            if fid < oldest:
+                del self.frame_history[fid]
         
         # 清理pending
         if self.current_frame in self.frame_buffer.pending_inputs:
@@ -228,9 +244,7 @@ class FrameEngine:
     
     def get_frame(self, frame_id: int) -> Optional[Frame]:
         """获取历史帧"""
-        if frame_id < 0 or frame_id >= len(self.frame_history):
-            return None
-        return self.frame_history[frame_id]
+        return self.frame_history.get(frame_id)  # 修复：直接使用字典查找
     
     def get_current_frame_id(self) -> int:
         """获取当前帧ID"""

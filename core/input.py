@@ -3,7 +3,7 @@ Input handling for frame synchronization
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Union
 from enum import IntFlag
 import struct
 
@@ -66,6 +66,10 @@ class PlayerInput:
     def deserialize(cls, data: bytes) -> 'PlayerInput':
         """从二进制反序列化"""
         header_size = struct.calcsize(cls.FORMAT)
+        
+        if len(data) < header_size:
+            raise ValueError("Input data too short")
+        
         header = data[:header_size]
         extra = data[header_size:]
         
@@ -111,7 +115,9 @@ class InputManager:
         """
         self.player_id = player_id
         self.current_input: Optional[PlayerInput] = None
-        self.input_history: Dict[int, PlayerInput] = {}
+        # 修复：统一使用 bytes 存储历史输入
+        self.input_history: Dict[int, bytes] = {}
+        self.parsed_history: Dict[int, PlayerInput] = {}  # 解析后的本地输入
         self.max_history = 300
         self.pending_inputs: List[PlayerInput] = []
     
@@ -153,13 +159,17 @@ class InputManager:
         if not self.current_input:
             return None
         
-        # 保存到历史
-        self.input_history[self.current_input.frame_id] = self.current_input
+        # 保存到历史（bytes 格式，与其他玩家一致）
+        serialized = self.current_input.serialize()
+        self.input_history[self.current_input.frame_id] = serialized
+        self.parsed_history[self.current_input.frame_id] = self.current_input
         
         # 清理旧历史
         if len(self.input_history) > self.max_history:
             oldest = min(self.input_history.keys())
             del self.input_history[oldest]
+            if oldest in self.parsed_history:
+                del self.parsed_history[oldest]
         
         # 加入待发送队列
         self.pending_inputs.append(self.current_input)
@@ -179,9 +189,9 @@ class InputManager:
         self.pending_inputs.clear()
         return inputs
     
-    def get_input(self, frame_id: int) -> Optional[PlayerInput]:
+    def get_input(self, frame_id: int) -> Optional[bytes]:
         """
-        获取指定帧的输入
+        获取指定帧的输入（bytes格式）
         
         Args:
             frame_id: 帧ID
@@ -190,6 +200,18 @@ class InputManager:
             输入数据，不存在则返回None
         """
         return self.input_history.get(frame_id)
+    
+    def get_parsed_input(self, frame_id: int) -> Optional[PlayerInput]:
+        """
+        获取解析后的输入（仅本地玩家）
+        
+        Args:
+            frame_id: 帧ID
+        
+        Returns:
+            解析后的输入
+        """
+        return self.parsed_history.get(frame_id)
     
     def apply_remote_input(self, player_id: int, frame_id: int, input_data: bytes):
         """
@@ -200,12 +222,9 @@ class InputManager:
             frame_id: 帧ID
             input_data: 输入数据（序列化后）
         """
-        # 存储原始数据，用于帧同步
-        if frame_id not in self.input_history:
-            self.input_history[frame_id] = {}
-        
-        # 注意：这里存储的是 bytes，本地输入是 PlayerInput
-        # 在实际使用时需要统一类型
+        # 修复：统一存储格式
+        key = (frame_id, player_id)
+        self.input_history[key] = input_data
 
 
 class InputValidator:
@@ -213,6 +232,9 @@ class InputValidator:
     输入验证器
     用于检测异常输入（可能表示作弊）
     """
+    
+    MAX_INPUT_SIZE = 1024  # 最大输入大小
+    MAX_FRAME_AHEAD = 100  # 最大超前帧数
     
     def __init__(self, max_apm: int = 600):
         """
@@ -224,7 +246,7 @@ class InputValidator:
         self.max_apm = max_apm
         self.input_times: Dict[int, List[float]] = {}  # {player_id: [timestamps]}
     
-    def validate(self, player_id: int, input_data: PlayerInput) -> bool:
+    def validate(self, player_id: int, input_data: Union[bytes, PlayerInput]) -> bool:
         """
         验证输入是否合法
         
@@ -235,6 +257,15 @@ class InputValidator:
         Returns:
             True 如果输入合法
         """
+        # 如果是 bytes，先解析
+        if isinstance(input_data, bytes):
+            if len(input_data) > self.MAX_INPUT_SIZE:
+                return False
+            try:
+                input_data = PlayerInput.deserialize(input_data)
+            except ValueError:
+                return False
+        
         # 检查输入频率
         if player_id not in self.input_times:
             self.input_times[player_id] = []
@@ -254,6 +285,23 @@ class InputValidator:
         if apm > self.max_apm:
             return False
         
+        return True
+    
+    def validate_frame_id(self, frame_id: int, current_frame: int) -> bool:
+        """
+        验证帧ID是否合法
+        
+        Args:
+            frame_id: 输入的帧ID
+            current_frame: 当前帧ID
+        
+        Returns:
+            True 如果帧ID合法
+        """
+        if frame_id < 0:
+            return False
+        if frame_id > current_frame + self.MAX_FRAME_AHEAD:
+            return False
         return True
     
     def check_input_range(self, target_x: int, target_y: int) -> bool:

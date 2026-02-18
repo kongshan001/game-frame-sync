@@ -52,6 +52,9 @@ class Entity:
         Args:
             dt_ms: 时间增量（毫秒）
         """
+        # 修复：添加边界检查
+        if dt_ms <= 0:
+            return
         # v * dt / 1000
         self.x += (self.vx * dt_ms) // 1000
         self.y += (self.vy * dt_ms) // 1000
@@ -69,6 +72,15 @@ class Entity:
             self.x + self.width,
             self.y + self.height
         )
+    
+    def reset(self):
+        """重置实体状态（用于对象池）"""
+        self.x = 0
+        self.y = 0
+        self.vx = 0
+        self.vy = 0
+        self.hp = self.max_hp
+        self.flags = 0
     
     def serialize(self) -> dict:
         """序列化为字典"""
@@ -104,7 +116,7 @@ class PhysicsEngine:
     
     # 物理常量（定点数）
     GRAVITY = 980 << 16  # 980 像素/秒²
-    FRICTION = 0.9  # 摩擦系数
+    FRICTION = 58982  # 修复：0.9 的定点数表示 (0.9 * 65536 ≈ 58982)
     MAX_VELOCITY = 1000 << 16  # 最大速度
     
     # 游戏边界
@@ -115,6 +127,9 @@ class PhysicsEngine:
         """初始化物理引擎"""
         self.entities: Dict[int, Entity] = {}
         self.collision_pairs: List[Tuple[int, int]] = []
+        # 空间网格（性能优化）
+        self.spatial_grid: Dict[Tuple[int, int], List[int]] = {}
+        self.cell_size = 64 << 16  # 64像素网格
     
     def add_entity(self, entity: Entity):
         """添加实体"""
@@ -136,6 +151,9 @@ class PhysicsEngine:
         Args:
             dt_ms: 时间增量（毫秒）
         """
+        if dt_ms <= 0:  # 修复：添加边界检查
+            return
+            
         # 1. 更新每个实体的位置
         for entity in self.entities.values():
             # 应用重力
@@ -148,14 +166,14 @@ class PhysicsEngine:
             # 更新位置
             entity.update_position(dt_ms)
             
-            # 应用摩擦力
-            entity.vx = int(entity.vx * self.FRICTION)
+            # 应用摩擦力（定点数乘法）
+            entity.vx = (entity.vx * self.FRICTION) >> 16
         
         # 2. 边界碰撞
         self._handle_boundary_collision()
         
-        # 3. 实体间碰撞
-        self._handle_entity_collision()
+        # 3. 实体间碰撞（使用空间网格优化）
+        self._handle_entity_collision_optimized()
     
     def _handle_boundary_collision(self):
         """处理边界碰撞"""
@@ -180,18 +198,60 @@ class PhysicsEngine:
                 entity.y = self.WORLD_HEIGHT - entity.height
                 entity.vy = 0
     
-    def _handle_entity_collision(self):
-        """处理实体间碰撞（AABB）"""
+    def _update_spatial_grid(self):
+        """更新空间网格"""
+        self.spatial_grid.clear()
+        for eid, entity in self.entities.items():
+            cx = (entity.x + entity.width // 2) // self.cell_size
+            cy = (entity.y + entity.height // 2) // self.cell_size
+            cell = (cx, cy)
+            if cell not in self.spatial_grid:
+                self.spatial_grid[cell] = []
+            self.spatial_grid[cell].append(eid)
+    
+    def _handle_entity_collision_optimized(self):
+        """优化的实体间碰撞检测（空间网格）"""
         self.collision_pairs.clear()
+        self._update_spatial_grid()
         
-        entities = sorted(self.entities.values(), key=lambda e: e.entity_id)
-        n = len(entities)
+        checked = set()
         
-        for i in range(n):
-            for j in range(i + 1, n):
-                if self._check_aabb_collision(entities[i], entities[j]):
-                    self.collision_pairs.append((entities[i].entity_id, entities[j].entity_id))
-                    self._resolve_collision(entities[i], entities[j])
+        for cell, entity_ids in self.spatial_grid.items():
+            # 检查同单元格内的实体
+            for i, eid1 in enumerate(entity_ids):
+                for eid2 in entity_ids[i+1:]:
+                    pair = (min(eid1, eid2), max(eid1, eid2))
+                    if pair in checked:
+                        continue
+                    checked.add(pair)
+                    
+                    e1 = self.entities[eid1]
+                    e2 = self.entities[eid2]
+                    if self._check_aabb_collision(e1, e2):
+                        self.collision_pairs.append(pair)
+                        self._resolve_collision(e1, e2)
+            
+            # 检查相邻单元格
+            cx, cy = cell
+            neighbors = [(-1,0), (0,-1), (-1,-1), (1,-1)]
+            
+            for dx, dy in neighbors:
+                neighbor = (cx + dx, cy + dy)
+                if neighbor not in self.spatial_grid:
+                    continue
+                    
+                for eid1 in entity_ids:
+                    for eid2 in self.spatial_grid[neighbor]:
+                        pair = (min(eid1, eid2), max(eid1, eid2))
+                        if pair in checked:
+                            continue
+                        checked.add(pair)
+                        
+                        e1 = self.entities[eid1]
+                        e2 = self.entities[eid2]
+                        if self._check_aabb_collision(e1, e2):
+                            self.collision_pairs.append(pair)
+                            self._resolve_collision(e1, e2)
     
     def _check_aabb_collision(self, a: Entity, b: Entity) -> bool:
         """AABB 碰撞检测"""
@@ -301,3 +361,35 @@ def isqrt(n: int) -> int:
         y = (x + n // x) // 2
     
     return x
+
+
+class EntityPool:
+    """实体对象池（性能优化）"""
+    
+    def __init__(self, initial_size: int = 100):
+        self._pool: List[Entity] = []
+        self._active: set = set()
+        
+        for i in range(initial_size):
+            entity = Entity(entity_id=i)
+            self._pool.append(entity)
+    
+    def acquire(self, entity_id: int) -> Entity:
+        if entity_id in self._active:
+            raise ValueError(f"Entity {entity_id} already active")
+        
+        if self._pool:
+            entity = self._pool.pop()
+            entity.entity_id = entity_id
+            entity.reset()
+            self._active.add(entity_id)
+            return entity
+        
+        entity = Entity(entity_id=entity_id)
+        self._active.add(entity_id)
+        return entity
+    
+    def release(self, entity: Entity):
+        if entity.entity_id in self._active:
+            self._active.remove(entity.entity_id)
+            self._pool.append(entity)

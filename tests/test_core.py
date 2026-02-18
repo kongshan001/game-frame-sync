@@ -3,12 +3,15 @@ Unit tests for frame synchronization core
 """
 
 import pytest
+import time
 from core.frame import Frame, FrameBuffer, FrameEngine
 from core.input import PlayerInput, InputManager, InputFlags, InputValidator
-from core.physics import Entity, PhysicsEngine, distance
+from core.physics import Entity, PhysicsEngine, distance, EntityPool
 from core.rng import DeterministicRNG
 from core.state import GameState, StateSnapshot, StateValidator
 
+
+# ==================== Frame 测试 ====================
 
 class TestFrame:
     """Frame 测试"""
@@ -81,6 +84,19 @@ class TestFrameBuffer:
         buffer.cleanup_old_frames(5)
         
         assert 1 not in buffer.frames
+    
+    def test_invalid_input_rejected(self):
+        """测试无效输入被拒绝"""
+        buffer = FrameBuffer(buffer_size=2)
+        
+        # 负帧ID
+        buffer.add_input(-1, 1, b'input')
+        assert -1 not in buffer.pending_inputs
+        
+        # 过大输入
+        large_input = b'x' * 2000
+        buffer.add_input(1, 1, large_input)
+        assert 1 not in buffer.pending_inputs
 
 
 class TestFrameEngine:
@@ -108,9 +124,39 @@ class TestFrameEngine:
         frame = engine.force_tick()
         
         assert frame is not None
-        assert not frame.confirmed  # 强制帧未完全确认
+        assert not frame.confirmed
         assert len(frame.inputs) == 2
+    
+    def test_get_frame(self):
+        """测试获取历史帧"""
+        engine = FrameEngine(player_count=2)
+        
+        engine.add_input(0, 1, b'input1')
+        engine.add_input(0, 2, b'input2')
+        engine.tick()
+        
+        frame = engine.get_frame(0)
+        assert frame is not None
+        assert frame.frame_id == 0
+        
+        # 不存在的帧
+        frame = engine.get_frame(999)
+        assert frame is None
+    
+    def test_frame_history_cleanup(self):
+        """测试帧历史自动清理"""
+        engine = FrameEngine(player_count=1)
+        engine.max_history = 5
+        
+        for i in range(10):
+            engine.add_input(i, 1, b'input')
+            engine.tick()
+        
+        # 只保留最近的帧
+        assert len(engine.frame_history) <= 5
 
+
+# ==================== Input 测试 ====================
 
 class TestPlayerInput:
     """PlayerInput 测试"""
@@ -156,6 +202,11 @@ class TestPlayerInput:
         input_data.set_flag(InputFlags.MOVE_DOWN)
         dx, dy = input_data.get_direction()
         assert dy == 1
+    
+    def test_invalid_deserialize(self):
+        """测试无效数据反序列化"""
+        with pytest.raises(ValueError):
+            PlayerInput.deserialize(b'short')
 
 
 class TestInputManager:
@@ -173,6 +224,22 @@ class TestInputManager:
         assert result.frame_id == 1
         assert result.has_flag(InputFlags.MOVE_RIGHT)
         assert result.has_flag(InputFlags.ATTACK)
+    
+    def test_history_storage(self):
+        """测试历史存储"""
+        manager = InputManager(player_id=1)
+        
+        manager.begin_frame(1)
+        manager.set_input(InputFlags.MOVE_RIGHT)
+        manager.end_frame()
+        
+        # 检查 bytes 格式存储
+        assert 1 in manager.input_history
+        assert isinstance(manager.input_history[1], bytes)
+        
+        # 检查解析后存储
+        assert 1 in manager.parsed_history
+        assert manager.parsed_history[1].has_flag(InputFlags.MOVE_RIGHT)
 
 
 class TestInputValidator:
@@ -192,7 +259,31 @@ class TestInputValidator:
         
         assert validator.check_input_range(100, 100)
         assert not validator.check_input_range(100000000, 100)
+    
+    def test_frame_id_validation(self):
+        """测试帧ID验证"""
+        validator = InputValidator()
+        
+        assert validator.validate_frame_id(100, 100)
+        assert validator.validate_frame_id(150, 100)
+        assert not validator.validate_frame_id(-1, 100)
+        assert not validator.validate_frame_id(300, 100)  # 超过 MAX_FRAME_AHEAD
+    
+    def test_bytes_validation(self):
+        """测试 bytes 格式验证"""
+        validator = InputValidator()
+        
+        input_data = PlayerInput(frame_id=1, player_id=1, flags=InputFlags.MOVE_RIGHT)
+        serialized = input_data.serialize()
+        
+        assert validator.validate(1, serialized)
+        
+        # 过大的输入
+        large_data = b'x' * 2000
+        assert not validator.validate(1, large_data)
 
+
+# ==================== Physics 测试 ====================
 
 class TestEntity:
     """Entity 测试"""
@@ -209,12 +300,32 @@ class TestEntity:
     def test_entity_position_update(self):
         """测试位置更新"""
         entity = Entity(entity_id=1, x=0, y=0)
-        entity.vx = 100 << 16  # 100 像素/秒
+        entity.vx = 200 << 16  # 200 像素/秒
         
         entity.update_position(1000)  # 1秒
         
         x, _ = entity.to_int()
-        assert x == 100
+        assert x == 200
+    
+    def test_entity_zero_dt(self):
+        """测试零时间增量"""
+        entity = Entity(entity_id=1, x=0, y=0)
+        entity.vx = 200 << 16
+        
+        entity.update_position(0)  # dt=0
+        
+        assert entity.x == 0  # 不应该移动
+    
+    def test_entity_reset(self):
+        """测试实体重置"""
+        entity = Entity(entity_id=1, x=100 << 16, y=100 << 16)
+        entity.vx = 50 << 16
+        
+        entity.reset()
+        
+        assert entity.x == 0
+        assert entity.y == 0
+        assert entity.vx == 0
 
 
 class TestPhysicsEngine:
@@ -273,7 +384,50 @@ class TestPhysicsEngine:
         engine.update(33)
         
         assert len(engine.collision_pairs) == 1
+    
+    def test_zero_dt_update(self):
+        """测试零时间增量更新"""
+        engine = PhysicsEngine()
+        entity = Entity(entity_id=1, x=0, y=0)
+        entity.vy = 100 << 16
+        
+        engine.add_entity(entity)
+        engine.update(0)  # dt=0
+        
+        # 不应该移动
+        assert entity.x == 0
+        assert entity.y == 0
 
+
+class TestEntityPool:
+    """EntityPool 测试"""
+    
+    def test_acquire_release(self):
+        """测试获取和释放"""
+        pool = EntityPool(initial_size=5)
+        
+        entity = pool.acquire(1)
+        assert entity.entity_id == 1
+        
+        pool.release(entity)
+        
+        # 再次获取应该从池中取
+        entity2 = pool.acquire(2)
+        assert entity2.entity_id == 2
+    
+    def test_pool_exhaustion(self):
+        """测试池耗尽"""
+        pool = EntityPool(initial_size=2)
+        
+        pool.acquire(1)
+        pool.acquire(2)
+        
+        # 池空了，应该创建新实体
+        entity = pool.acquire(3)
+        assert entity is not None
+
+
+# ==================== RNG 测试 ====================
 
 class TestDeterministicRNG:
     """DeterministicRNG 测试"""
@@ -291,7 +445,6 @@ class TestDeterministicRNG:
         rng1 = DeterministicRNG(12345)
         rng2 = DeterministicRNG(54321)
         
-        # 不同种子应该产生不同序列
         values1 = [rng1.range(0, 100) for _ in range(10)]
         values2 = [rng2.range(0, 100) for _ in range(10)]
         
@@ -312,7 +465,17 @@ class TestDeterministicRNG:
         for _ in range(1000):
             val = rng.uniform()
             assert 0 <= val < 1
+    
+    def test_zero_seed(self):
+        """测试零种子"""
+        rng = DeterministicRNG(0)
+        
+        # 零种子应该被转换为非零
+        assert rng.state != 0
+        assert rng.range(0, 100) >= 0
 
+
+# ==================== State 测试 ====================
 
 class TestGameState:
     """GameState 测试"""
@@ -344,6 +507,26 @@ class TestGameState:
         hash2 = state.compute_state_hash()
         
         assert hash1 != hash2
+    
+    def test_rollback(self):
+        """测试回滚"""
+        state = GameState()
+        
+        # 创建多个快照
+        state.frame_id = 10
+        state.save_snapshot()
+        
+        state.frame_id = 20
+        state.save_snapshot()
+        
+        state.frame_id = 30
+        
+        # 回滚到20
+        assert state.rollback_to(20)
+        assert state.frame_id == 20
+        
+        # 回滚到不存在的快照
+        assert not state.rollback_to(999)
 
 
 class TestStateValidator:
@@ -370,6 +553,7 @@ class TestStateValidator:
         assert mismatches[0]['frame_id'] == 1
 
 
-# 运行测试
+# ==================== 运行测试 ====================
+
 if __name__ == '__main__':
-    pytest.main([__file__, '-v'])
+    pytest.main([__file__, '-v', '--tb=short'])
