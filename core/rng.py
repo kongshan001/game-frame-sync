@@ -1,0 +1,167 @@
+"""
+Deterministic Random Number Generator
+"""
+
+from typing import List
+
+
+class DeterministicRNG:
+    """
+    确定性随机数生成器
+    使用 Xorshift32 算法，保证跨平台一致性
+    """
+    
+    def __init__(self, seed: int):
+        """
+        初始化 RNG
+        
+        Args:
+            seed: 随机种子
+        """
+        # 确保种子非零
+        self.state = seed & 0xFFFFFFFF
+        if self.state == 0:
+            self.state = 1
+    
+    def next_uint32(self) -> int:
+        """
+        生成下一个 32 位无符号整数
+        
+        Returns:
+            随机整数 [0, 2^32-1]
+        """
+        # Xorshift32 算法
+        x = self.state
+        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= (x >> 17)
+        x ^= (x << 5) & 0xFFFFFFFF
+        self.state = x
+        return x
+    
+    def next_int(self) -> int:
+        """生成有符号整数"""
+        return self.next_uint32() - 0x80000000
+    
+    def range(self, min_val: int, max_val: int) -> int:
+        """
+        生成指定范围的随机整数
+        
+        Args:
+            min_val: 最小值（包含）
+            max_val: 最大值（包含）
+        
+        Returns:
+            [min_val, max_val] 范围内的整数
+        """
+        if min_val == max_val:
+            return min_val
+        
+        span = max_val - min_val + 1
+        return min_val + (self.next_uint32() % span)
+    
+    def uniform(self) -> float:
+        """
+        生成 [0, 1) 范围的浮点数
+        
+        Returns:
+            随机浮点数
+        """
+        return self.next_uint32() / 0x100000000
+    
+    def uniform_range(self, min_val: float, max_val: float) -> float:
+        """
+        生成指定范围的随机浮点数
+        
+        Args:
+            min_val: 最小值
+            max_val: 最大值
+        
+        Returns:
+            [min_val, max_val) 范围内的浮点数
+        """
+        return min_val + self.uniform() * (max_val - min_val)
+    
+    def chance(self, probability: float) -> bool:
+        """
+        以给定概率返回 True
+        
+        Args:
+            probability: 概率 [0, 1]
+        
+        Returns:
+            True 以给定概率
+        """
+        return self.uniform() < probability
+    
+    def pick(self, items: List) -> any:
+        """
+        从列表中随机选择一个元素
+        
+        Args:
+            items: 列表
+        
+        Returns:
+            随机选择的元素
+        """
+        if not items:
+            return None
+        index = self.range(0, len(items) - 1)
+        return items[index]
+    
+    def shuffle(self, items: List) -> List:
+        """
+        Fisher-Yates 洗牌算法（确定性）
+        
+        Args:
+            items: 要洗牌的列表
+        
+        Returns:
+            洗牌后的新列表
+        """
+        result = items.copy()
+        n = len(result)
+        for i in range(n - 1, 0, -1):
+            j = self.range(0, i)
+            result[i], result[j] = result[j], result[i]
+        return result
+    
+    def get_state(self) -> int:
+        """获取当前状态（可用于保存/恢复）"""
+        return self.state
+    
+    def set_state(self, state: int):
+        """设置状态"""
+        self.state = state & 0xFFFFFFFF
+        if self.state == 0:
+            self.state = 1
+
+
+class SeededRNG:
+    """
+    基于 Python random 模块的确定性 RNG
+    使用线性同余生成器（LCG）保证一致性
+    """
+    
+    # LCG 参数（来自 Numerical Recipes）
+    MULTIPLIER = 1664525
+    INCREMENT = 1013904223
+    MODULUS = 2 ** 32
+    
+    def __init__(self, seed: int):
+        """初始化"""
+        self.state = seed % self.MODULUS
+        if self.state == 0:
+            self.state = 1
+    
+    def next(self) -> int:
+        """生成下一个随机数"""
+        self.state = (self.MULTIPLIER * self.state + self.INCREMENT) % self.MODULUS
+        return self.state
+    
+    def range(self, min_val: int, max_val: int) -> int:
+        """生成范围整数"""
+        return min_val + (self.next() % (max_val - min_val + 1))
+    
+    def uniform(self) -> float:
+        """生成 [0, 1) 浮点数"""
+        return self.next() / self.MODULUS
