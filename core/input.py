@@ -266,19 +266,25 @@ class InputValidator:
             except ValueError:
                 return False
         
-        # 检查输入频率
+        # 检查输入频率（使用帧ID作为时间基准，30fps）
         if player_id not in self.input_times:
             self.input_times[player_id] = []
         
-        now = input_data.frame_id * 0.033  # 假设30fps
-        self.input_times[player_id].append(now)
+        frame_time = input_data.frame_id * 0.033  # 30fps
         
-        # 只保留最近1秒
-        self.input_times[player_id] = [
-            t for t in self.input_times[player_id] if now - t < 1.0
-        ]
+        # 避免重复记录同一帧
+        if self.input_times[player_id] and self.input_times[player_id][-1] == frame_time:
+            # 同一帧的重复输入，跳过APM检测
+            pass
+        else:
+            self.input_times[player_id].append(frame_time)
+            
+            # 只保留最近1秒
+            self.input_times[player_id] = [
+                t for t in self.input_times[player_id] if frame_time - t < 1.0
+            ]
         
-        # 检查APM
+        # 检查APM（放宽阈值，因为同一帧可能有多个操作）
         inputs_per_second = len(self.input_times[player_id])
         apm = inputs_per_second * 60
         

@@ -1,7 +1,6 @@
 # Frame Sync Game - Python Dependencies
 
-# Core
-asyncio-compat>=0.1.0
+# Core (asyncio is built-in since Python 3.4+)
 
 # Networking
 websockets>=12.0

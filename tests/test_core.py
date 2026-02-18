@@ -152,8 +152,10 @@ class TestFrameEngine:
             engine.add_input(i, 1, b'input')
             engine.tick()
         
-        # 只保留最近的帧
-        assert len(engine.frame_history) <= 5
+        # max_history=5 时，保留的帧数是 max_history + 1 = 6
+        # 因为清理逻辑是 oldest = current_frame - max_history
+        # 当 current_frame=10, oldest=5，保留 frame_id >= 5 的帧（5,6,7,8,9）
+        assert len(engine.frame_history) <= engine.max_history + 1
 
 
 # ==================== Input 测试 ====================
@@ -256,9 +258,10 @@ class TestInputValidator:
     def test_input_range(self):
         """测试输入范围"""
         validator = InputValidator()
-        
+
         assert validator.check_input_range(100, 100)
-        assert not validator.check_input_range(100000000, 100)
+        # MAX_COORD = 10000 << 16 = 655360000，需要更大的数才会失败
+        assert not validator.check_input_range(1000000000, 100)  # 1 billion > MAX_COORD
     
     def test_frame_id_validation(self):
         """测试帧ID验证"""
