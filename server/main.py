@@ -409,6 +409,7 @@ class GameServer:
         """处理玩家断线"""
         player = self.players.get(player_id)
         if not player:
+            logger.debug(f"Player {self._anonymize(player_id)} not found in players dict")
             return
         
         room_id = player.room_id
@@ -418,18 +419,25 @@ class GameServer:
             room.players.discard(player_id)
             
             # 通知其他玩家
-            await self._broadcast_to_room(room_id, {
-                'type': 'player_left',
-                'payload': {'player_id': player_id}
-            })
+            try:
+                await self._broadcast_to_room(room_id, {
+                    'type': 'player_left',
+                    'payload': {'player_id': player_id}
+                })
+            except Exception as e:
+                logger.error(f"Error broadcasting player_left: {e}")
             
             # 如果房间空了，清理
             if not room.players:
-                del self.rooms[room_id]
-                logger.info(f"Room {self._anonymize(room_id)} cleaned up")
+                # 再次检查房间是否还存在（防止竞态）
+                if room_id in self.rooms:
+                    del self.rooms[room_id]
+                    logger.info(f"Room {self._anonymize(room_id)} cleaned up")
         
-        del self.players[player_id]
-        logger.info(f"Player {self._anonymize(player_id)} disconnected")
+        # 安全删除玩家
+        if player_id in self.players:
+            del self.players[player_id]
+            logger.info(f"Player {self._anonymize(player_id)} disconnected")
     
     async def _frame_loop(self):
         """帧同步主循环"""
@@ -441,20 +449,31 @@ class GameServer:
             # 处理所有房间
             for room_id, room in list(self.rooms.items()):
                 try:
-                    frame = room.frame_engine.tick()
+                    # 检查是否可以开始游戏（玩家数量足够且未开始）
+                    if not room.is_started and len(room.players) >= 2:
+                        room.is_started = True
+                        room.start_frame = room.frame_engine.current_frame
+                        logger.info(f"Room {self._anonymize(room_id)} game started with {len(room.players)} players")
+                        await self._broadcast_to_room(room_id, {
+                            'type': 'game_start',
+                            'payload': {'start_frame': room.start_frame}
+                        })
+                    
+                    # 如果游戏已开始，推进帧
+                    if room.is_started:
+                        # 先尝试正常tick
+                        frame = room.frame_engine.tick()
+                        
+                        # 如果没有足够的输入，使用 force_tick
+                        if not frame:
+                            frame = room.frame_engine.force_tick()
+                    else:
+                        # 游戏未开始，正常tick
+                        frame = room.frame_engine.tick()
                     
                     if frame:
                         # 广播帧数据
                         await self._broadcast_frame(room_id, frame)
-                        
-                        # 检查是否可以开始游戏
-                        if not room.is_started and len(room.players) >= 2:
-                            room.is_started = True
-                            room.start_frame = frame.frame_id
-                            await self._broadcast_to_room(room_id, {
-                                'type': 'game_start',
-                                'payload': {'start_frame': room.start_frame}
-                            })
                     
                 except Exception as e:
                     logger.error(f"Frame loop error in room {room_id}: {e}")
