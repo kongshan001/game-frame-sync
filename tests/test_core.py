@@ -1,5 +1,9 @@
 """
 Unit tests for frame synchronization core
+
+重构说明：
+- 使用 fixed() 函数创建定点数
+- 使用 CONFIG 读取配置参数
 """
 
 import pytest
@@ -9,6 +13,8 @@ from core.input import PlayerInput, InputManager, InputFlags, InputValidator
 from core.physics import Entity, PhysicsEngine, distance, EntityPool
 from core.rng import DeterministicRNG
 from core.state import GameState, StateSnapshot, StateValidator
+from core.fixed import fixed, FixedPoint
+from core.config import CONFIG
 
 
 # ==================== Frame 测试 ====================
@@ -260,7 +266,7 @@ class TestInputValidator:
         validator = InputValidator()
 
         assert validator.check_input_range(100, 100)
-        # MAX_COORD = 10000 << 16 = 655360000，需要更大的数才会失败
+        # MAX_COORD = 10000 * SCALE，需要更大的数才会失败
         assert not validator.check_input_range(1000000000, 100)  # 1 billion > MAX_COORD
     
     def test_frame_id_validation(self):
@@ -303,7 +309,7 @@ class TestEntity:
     def test_entity_position_update(self):
         """测试位置更新"""
         entity = Entity(entity_id=1, x=0, y=0)
-        entity.vx = 200 << 16  # 200 像素/秒
+        entity.set_velocity(200.0, 0)  # 使用 set_velocity 方法
         
         entity.update_position(1000)  # 1秒
         
@@ -313,7 +319,7 @@ class TestEntity:
     def test_entity_zero_dt(self):
         """测试零时间增量"""
         entity = Entity(entity_id=1, x=0, y=0)
-        entity.vx = 200 << 16
+        entity.set_velocity(200.0, 0)
         
         entity.update_position(0)  # dt=0
         
@@ -321,8 +327,8 @@ class TestEntity:
     
     def test_entity_reset(self):
         """测试实体重置"""
-        entity = Entity(entity_id=1, x=100 << 16, y=100 << 16)
-        entity.vx = 50 << 16
+        entity = Entity.from_float(1, 100.0, 100.0)
+        entity.set_velocity(50.0, 0)
         
         entity.reset()
         
@@ -352,11 +358,11 @@ class TestPhysicsEngine:
         engine2 = PhysicsEngine()
         
         # 相同的初始状态
-        entity1 = Entity(entity_id=1, x=100 << 16, y=0)
-        entity2 = Entity(entity_id=1, x=100 << 16, y=0)
+        entity1 = Entity.from_float(1, 100.0, 0.0)
+        entity2 = Entity.from_float(1, 100.0, 0.0)
         
-        entity1.vy = 100 << 16
-        entity2.vy = 100 << 16
+        entity1.set_velocity(0.0, 100.0)
+        entity2.set_velocity(0.0, 100.0)
         
         engine1.add_entity(entity1)
         engine2.add_entity(entity2)
@@ -378,8 +384,8 @@ class TestPhysicsEngine:
         engine = PhysicsEngine()
         
         # 两个重叠的实体
-        entity1 = Entity(entity_id=1, x=0, y=0)
-        entity2 = Entity(entity_id=2, x=16 << 16, y=0)  # 部分重叠
+        entity1 = Entity.from_float(1, 0.0, 0.0)
+        entity2 = Entity.from_float(2, 16.0, 0.0)  # 部分重叠
         
         engine.add_entity(entity1)
         engine.add_entity(entity2)
@@ -391,8 +397,8 @@ class TestPhysicsEngine:
     def test_zero_dt_update(self):
         """测试零时间增量更新"""
         engine = PhysicsEngine()
-        entity = Entity(entity_id=1, x=0, y=0)
-        entity.vy = 100 << 16
+        entity = Entity.from_float(1, 0.0, 0.0)
+        entity.set_velocity(0.0, 100.0)
         
         engine.add_entity(entity)
         engine.update(0)  # dt=0

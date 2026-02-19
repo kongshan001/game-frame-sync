@@ -1,5 +1,9 @@
 """
 Integration tests for frame synchronization
+
+重构说明：
+- 使用 fixed() 函数创建定点数
+- 使用 CONFIG 读取配置参数
 """
 
 import pytest
@@ -17,6 +21,8 @@ from core.input import PlayerInput, InputFlags, InputManager, InputValidator
 from core.physics import PhysicsEngine, Entity
 from core.state import GameState, StateValidator
 from core.rng import DeterministicRNG
+from core.fixed import fixed, FixedPoint
+from core.config import CONFIG
 from server.main import GameServer, RateLimiter, MessageValidator
 from client.game_client import GameClient
 from client.predictor import ClientPredictor
@@ -73,12 +79,13 @@ class TestFrameSyncIntegration:
             physics2.add_entity(e2)
         
         # 模拟相同输入
+        player_speed = int(CONFIG.game.PLAYER_SPEED * FixedPoint.SCALE)
         for frame in range(100):
             for i in range(4):
                 # 相同输入
                 flags = InputFlags.MOVE_RIGHT if i % 2 == 0 else InputFlags.MOVE_LEFT
-                physics1.apply_input(i, flags, 300 << 16)
-                physics2.apply_input(i, flags, 300 << 16)
+                physics1.apply_input(i, flags, player_speed)
+                physics2.apply_input(i, flags, player_speed)
             
             physics1.update(33)
             physics2.update(33)
@@ -290,14 +297,14 @@ class TestDeterminismIntegration:
         rng1 = DeterministicRNG(12345)
         physics1 = PhysicsEngine()
         entity1 = Entity.from_float(1, 100.0, 100.0)
-        entity1.vx = 200 << 16
+        entity1.set_velocity(200.0, 0.0)
         physics1.add_entity(entity1)
         
         # 客户端2
         rng2 = DeterministicRNG(12345)
         physics2 = PhysicsEngine()
         entity2 = Entity.from_float(1, 100.0, 100.0)
-        entity2.vx = 200 << 16
+        entity2.set_velocity(200.0, 0.0)
         physics2.add_entity(entity2)
         
         # 执行相同操作

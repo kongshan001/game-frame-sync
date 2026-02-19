@@ -1,5 +1,10 @@
 """
 Simple 2D demo game for frame synchronization visualization
+
+重构说明：
+- 使用 core.config.CONFIG 替代本地 GameConfig
+- 使用 core.fixed.fixed() 创建定点数
+- 移除所有硬编码的 << 16
 """
 
 import asyncio
@@ -18,6 +23,8 @@ from core.input import InputFlags, PlayerInput
 from core.physics import PhysicsEngine, Entity
 from core.state import GameState
 from core.rng import DeterministicRNG
+from core.fixed import fixed, FixedPoint
+from core.config import CONFIG
 
 
 # ==================== 颜色定义 ====================
@@ -38,10 +45,11 @@ COLORS = {
 PLAYER_COLORS = [COLORS['player1'], COLORS['player2'], COLORS['player3'], COLORS['player4']]
 
 
-# ==================== 游戏配置 ====================
+# ==================== 演示专用配置 ====================
 
 @dataclass
-class GameConfig:
+class DemoConfig:
+    """演示专用配置（覆盖全局配置）"""
     width: int = 1200
     height: int = 700
     fps: int = 60
@@ -61,16 +69,19 @@ class LocalGameSimulator:
     用于演示和理解帧同步原理
     """
     
-    def __init__(self, config: GameConfig):
+    def __init__(self, config: DemoConfig):
         self.config = config
+        
+        # 更新全局配置
+        CONFIG.physics.WORLD_WIDTH = float(config.width)
+        CONFIG.physics.WORLD_HEIGHT = float(config.height)
+        CONFIG.game.PLAYER_SPEED = float(config.player_speed)
+        CONFIG.game.ATTACK_RANGE = float(config.attack_range)
+        CONFIG.game.ATTACK_DAMAGE = config.attack_damage
         
         # 游戏状态
         self.game_state = GameState()
-        self.physics = PhysicsEngine()
-        
-        # 配置物理引擎边界
-        self.physics.WORLD_WIDTH = config.width << 16
-        self.physics.WORLD_HEIGHT = config.height << 16
+        self.physics = PhysicsEngine()  # 使用更新后的 CONFIG
         
         # 帧引擎
         self.frame_engine = FrameEngine(
@@ -80,11 +91,12 @@ class LocalGameSimulator:
         
         # 玩家输入
         self.pending_inputs: Dict[int, Dict[int, bytes]] = {}
-        self.player_inputs: Dict[int, int] = {}  # {player_id: flags}
+        self.player_inputs: Dict[int, int] = {}
         
         # 统计
         self.current_frame = 0
         self.frame_history: List[Frame] = []
+        self._last_attacks: List[dict] = []
         
         # 初始化玩家
         self._init_players()
@@ -111,13 +123,7 @@ class LocalGameSimulator:
         self.player_inputs[player_id] = flags
     
     def tick(self) -> Optional[Frame]:
-        """
-        执行一帧
-        
-        Returns:
-            完成的帧，如果没有则返回 None
-        """
-        # 收集所有玩家输入
+        """执行一帧"""
         for player_id in range(self.config.player_count):
             flags = self.player_inputs.get(player_id, 0)
             
@@ -129,11 +135,9 @@ class LocalGameSimulator:
             
             self.frame_engine.add_input(self.current_frame, player_id, input_data)
         
-        # 尝试提交帧
         frame = self.frame_engine.tick()
         
         if frame:
-            # 执行帧
             self._apply_frame(frame)
             self.frame_history.append(frame)
             self.current_frame += 1
@@ -142,7 +146,7 @@ class LocalGameSimulator:
     
     def _apply_frame(self, frame: Frame):
         """应用帧输入到游戏"""
-        self._last_attacks = []  # 重置攻击事件列表
+        self._last_attacks = []
         
         for player_id, input_data in frame.inputs.items():
             if not input_data:
@@ -152,13 +156,8 @@ class LocalGameSimulator:
                 parsed = PlayerInput.deserialize(input_data)
                 entity = self.game_state.get_entity(player_id)
                 if entity:
-                    self.physics.apply_input(
-                        entity.entity_id,
-                        parsed.flags,
-                        self.config.player_speed << 16
-                    )
+                    self.physics.apply_input(entity.entity_id, parsed.flags)
                     
-                    # 处理攻击
                     if parsed.flags & InputFlags.ATTACK:
                         attack_info = self._handle_attack(player_id)
                         if attack_info:
@@ -166,20 +165,17 @@ class LocalGameSimulator:
             except Exception:
                 pass
         
-        # 更新物理
-        self.physics.update(33)  # 33ms = 30fps
+        self.physics.update(33)
     
     def _handle_attack(self, attacker_id: int):
         """处理攻击逻辑"""
         attacker = self.game_state.get_entity(attacker_id)
         if not attacker:
-            return []
+            return None
         
-        # 获取攻击者位置
         ax, ay = attacker.to_float()
         hits = []
         
-        # 检查范围内的其他玩家
         for target_id in range(self.config.player_count):
             if target_id == attacker_id:
                 continue
@@ -188,26 +184,21 @@ class LocalGameSimulator:
             if not target or target.hp <= 0:
                 continue
             
-            # 计算距离
             tx, ty = target.to_float()
-            distance = math.sqrt((ax - tx) ** 2 + (ay - ty) ** 2)
+            dist = math.sqrt((ax - tx) ** 2 + (ay - ty) ** 2)
             
-            # 在攻击范围内造成伤害
-            if distance <= self.config.attack_range:
+            if dist <= self.config.attack_range:
                 target.hp = max(0, target.hp - self.config.attack_damage)
                 hits.append(target_id)
         
-        # 返回攻击信息（用于渲染效果）
         return {'attacker_id': attacker_id, 'x': ax, 'y': ay, 'hits': hits}
     
     def get_last_attacks(self) -> List[dict]:
         """获取最近一帧的攻击事件"""
         return self._last_attacks
     
-    _last_attacks: List[dict] = []
-    
     def get_player_position(self, player_id: int) -> Tuple[float, float]:
-        """获取玩家位置（浮点数）"""
+        """获取玩家位置"""
         entity = self.game_state.get_entity(player_id)
         if entity:
             return entity.to_float()
@@ -226,7 +217,7 @@ class LocalGameSimulator:
 class GameRenderer:
     """PyGame 渲染器"""
     
-    def __init__(self, config: GameConfig):
+    def __init__(self, config: DemoConfig):
         self.config = config
         
         pygame.init()
@@ -237,30 +228,23 @@ class GameRenderer:
         self.font = pygame.font.Font(None, 24)
         self.large_font = pygame.font.Font(None, 36)
         
-        # 渲染状态
         self.show_grid = True
         self.show_debug = True
         self.show_help = True
-        
-        # 攻击效果
-        self.attack_effects: List[dict] = []  # [{x, y, time, player_id}]
+        self.attack_effects: List[dict] = []
     
     def render(self, simulator: LocalGameSimulator, extra_info: dict = None):
         """渲染游戏画面"""
         self.screen.fill(COLORS['background'])
         
-        # 绘制网格
         if self.show_grid:
             self._draw_grid()
         
-        # 绘制攻击效果
         self._draw_attack_effects()
         
-        # 绘制玩家
         for player_id in range(simulator.config.player_count):
             self._draw_player(simulator, player_id)
         
-        # 绘制UI
         if self.show_debug:
             self._draw_debug_info(simulator, extra_info)
         
@@ -269,35 +253,6 @@ class GameRenderer:
         
         pygame.display.flip()
     
-    def _draw_attack_effects(self):
-        """绘制攻击效果"""
-        current_time = time.time() * 1000
-        # 清理过期效果
-        self.attack_effects = [e for e in self.attack_effects 
-                               if current_time - e['time'] < 200]
-        
-        for effect in self.attack_effects:
-            age = current_time - effect['time']
-            alpha = max(0, 255 - int(age * 1.275))  # 渐隐
-            
-            # 攻击范围圆
-            radius = int(self.config.attack_range * (1 + age / 200))
-            color = PLAYER_COLORS[effect['player_id'] % len(PLAYER_COLORS)]
-            
-            # 创建带透明度的表面
-            surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
-            pygame.draw.circle(surface, (*color, alpha // 2), (radius, radius), radius, 3)
-            self.screen.blit(surface, (int(effect['x'] - radius), int(effect['y'] - radius)))
-    
-    def add_attack_effect(self, x: float, y: float, player_id: int):
-        """添加攻击效果"""
-        self.attack_effects.append({
-            'x': x,
-            'y': y,
-            'time': time.time() * 1000,
-            'player_id': player_id
-        })
-    
     def _draw_grid(self):
         """绘制背景网格"""
         for x in range(0, self.config.width, 50):
@@ -305,32 +260,52 @@ class GameRenderer:
         for y in range(0, self.config.height, 50):
             pygame.draw.line(self.screen, COLORS['grid'], (0, y), (self.config.width, y))
     
+    def _draw_attack_effects(self):
+        """绘制攻击效果"""
+        current_time = time.time() * 1000
+        self.attack_effects = [e for e in self.attack_effects 
+                               if current_time - e['time'] < 200]
+        
+        for effect in self.attack_effects:
+            age = current_time - effect['time']
+            alpha = max(0, 255 - int(age * 1.275))
+            
+            radius = int(self.config.attack_range * (1 + age / 200))
+            color = PLAYER_COLORS[effect['player_id'] % len(PLAYER_COLORS)]
+            
+            surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(surface, (*color, alpha // 2), (radius, radius), radius, 3)
+            self.screen.blit(surface, (int(effect['x'] - radius), int(effect['y'] - radius)))
+    
+    def add_attack_effect(self, x: float, y: float, player_id: int):
+        """添加攻击效果"""
+        self.attack_effects.append({
+            'x': x, 'y': y,
+            'time': time.time() * 1000,
+            'player_id': player_id
+        })
+    
     def _draw_player(self, simulator: LocalGameSimulator, player_id: int):
         """绘制玩家"""
         x, y = simulator.get_player_position(player_id)
         hp = simulator.get_player_hp(player_id)
         color = PLAYER_COLORS[player_id % len(PLAYER_COLORS)]
         
-        # 玩家矩形
         size = 40
         rect = pygame.Rect(int(x - size/2), int(y - size/2), size, size)
         pygame.draw.rect(self.screen, color, rect, border_radius=8)
         pygame.draw.rect(self.screen, (255, 255, 255), rect, 2, border_radius=8)
         
-        # 玩家ID
         text = self.font.render(f"P{player_id + 1}", True, (0, 0, 0))
         self.screen.blit(text, (int(x - 10), int(y - 8)))
         
-        # HP条
         hp_bar_width = 50
         hp_bar_height = 6
         hp_x = int(x - hp_bar_width/2)
         hp_y = int(y - size/2 - 15)
         
-        # 背景
         pygame.draw.rect(self.screen, (60, 60, 60), 
                         (hp_x, hp_y, hp_bar_width, hp_bar_height))
-        # HP
         hp_width = int(hp_bar_width * hp / 100)
         hp_color = (100, 255, 100) if hp > 50 else (255, 150, 100) if hp > 25 else (255, 100, 100)
         pygame.draw.rect(self.screen, hp_color, 
@@ -378,7 +353,6 @@ class GameRenderer:
 class InputHandler:
     """输入处理器"""
     
-    # 玩家1按键映射 (WASD)
     P1_KEYS = {
         pygame.K_w: InputFlags.MOVE_UP,
         pygame.K_s: InputFlags.MOVE_DOWN,
@@ -387,7 +361,6 @@ class InputHandler:
         pygame.K_SPACE: InputFlags.ATTACK,
     }
     
-    # 玩家2按键映射 (方向键)
     P2_KEYS = {
         pygame.K_UP: InputFlags.MOVE_UP,
         pygame.K_DOWN: InputFlags.MOVE_DOWN,
@@ -417,14 +390,13 @@ class DemoGame:
     """演示游戏"""
     
     def __init__(self):
-        self.config = GameConfig()
+        self.config = DemoConfig()
         self.simulator = LocalGameSimulator(self.config)
         self.renderer = GameRenderer(self.config)
         
         self.running = True
         self.paused = False
         
-        # 帧率控制
         self.logic_accumulator = 0.0
         self.logic_frame_time = 1000 / self.config.logic_fps
         self.last_time = time.time() * 1000
@@ -455,30 +427,23 @@ class DemoGame:
         delta_time = current_time - self.last_time
         self.last_time = current_time
         
-        # 限制最大帧时间
         delta_time = min(delta_time, 100)
         
         self.logic_accumulator += delta_time
         
-        # 固定步长逻辑更新
         while self.logic_accumulator >= self.logic_frame_time:
-            # 收集玩家输入
             for player_id in range(self.config.player_count):
                 flags = InputHandler.get_player_input(player_id)
                 self.simulator.set_player_input(player_id, flags)
             
-            # 执行帧
             self.simulator.tick()
             
             self.logic_accumulator -= self.logic_frame_time
     
     def render(self):
         """渲染画面"""
-        extra_info = {
-            'Status': 'PAUSED' if self.paused else 'RUNNING',
-        }
+        extra_info = {'Status': 'PAUSED' if self.paused else 'RUNNING'}
         
-        # 添加攻击效果到渲染器
         for attack in self.simulator.get_last_attacks():
             self.renderer.add_attack_effect(
                 attack['x'], attack['y'], attack['attacker_id']

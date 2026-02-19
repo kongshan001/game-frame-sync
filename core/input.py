@@ -13,6 +13,9 @@ from typing import Dict, List, Optional, Set, Union
 from enum import IntFlag
 import struct
 
+from .fixed import FixedPoint
+from .config import CONFIG
+
 
 class InputFlags(IntFlag):
     """
@@ -482,8 +485,8 @@ class InputValidator:
         Returns:
             True 如果范围合法
         """
-        # 定点数范围检查 (假设地图 0-10000 像素)
-        MAX_COORD = 10000 << 16
-        if abs(target_x) > MAX_COORD or abs(target_y) > MAX_COORD:
+        # 定点数范围检查 (使用配置的世界大小)
+        max_coord = int(max(CONFIG.physics.WORLD_WIDTH, CONFIG.physics.WORLD_HEIGHT) * FixedPoint.SCALE)
+        if abs(target_x) > max_coord or abs(target_y) > max_coord:
             return False
         return True

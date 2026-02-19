@@ -18,6 +18,8 @@ from core.frame import Frame
 from core.state import GameState
 from core.input import PlayerInput
 from core.physics import PhysicsEngine, Entity
+from core.fixed import FixedPoint
+from core.config import CONFIG
 
 
 @dataclass
@@ -248,7 +250,7 @@ class ClientPredictor:
                     self.physics.apply_input(
                         entity.entity_id, 
                         parsed.flags,
-                        300 << 16  # 速度
+                        int(CONFIG.game.PLAYER_SPEED * FixedPoint.SCALE)
                     )
             except Exception:
                 pass
