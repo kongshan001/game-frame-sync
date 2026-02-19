@@ -5,6 +5,7 @@
 # Networking
 websockets>=12.0
 msgpack>=1.0.7
+python-socks>=2.0.0  # SOCKS proxy support
 
 # Testing
 pytest>=7.4.0
