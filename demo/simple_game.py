@@ -142,6 +142,8 @@ class LocalGameSimulator:
     
     def _apply_frame(self, frame: Frame):
         """应用帧输入到游戏"""
+        self._last_attacks = []  # 重置攻击事件列表
+        
         for player_id, input_data in frame.inputs.items():
             if not input_data:
                 continue
@@ -155,11 +157,54 @@ class LocalGameSimulator:
                         parsed.flags,
                         self.config.player_speed << 16
                     )
+                    
+                    # 处理攻击
+                    if parsed.flags & InputFlags.ATTACK:
+                        attack_info = self._handle_attack(player_id)
+                        if attack_info:
+                            self._last_attacks.append(attack_info)
             except Exception:
                 pass
         
         # 更新物理
         self.physics.update(33)  # 33ms = 30fps
+    
+    def _handle_attack(self, attacker_id: int):
+        """处理攻击逻辑"""
+        attacker = self.game_state.get_entity(attacker_id)
+        if not attacker:
+            return []
+        
+        # 获取攻击者位置
+        ax, ay = attacker.to_float()
+        hits = []
+        
+        # 检查范围内的其他玩家
+        for target_id in range(self.config.player_count):
+            if target_id == attacker_id:
+                continue
+            
+            target = self.game_state.get_entity(target_id)
+            if not target or target.hp <= 0:
+                continue
+            
+            # 计算距离
+            tx, ty = target.to_float()
+            distance = math.sqrt((ax - tx) ** 2 + (ay - ty) ** 2)
+            
+            # 在攻击范围内造成伤害
+            if distance <= self.config.attack_range:
+                target.hp = max(0, target.hp - self.config.attack_damage)
+                hits.append(target_id)
+        
+        # 返回攻击信息（用于渲染效果）
+        return {'attacker_id': attacker_id, 'x': ax, 'y': ay, 'hits': hits}
+    
+    def get_last_attacks(self) -> List[dict]:
+        """获取最近一帧的攻击事件"""
+        return self._last_attacks
+    
+    _last_attacks: List[dict] = []
     
     def get_player_position(self, player_id: int) -> Tuple[float, float]:
         """获取玩家位置（浮点数）"""
@@ -196,6 +241,9 @@ class GameRenderer:
         self.show_grid = True
         self.show_debug = True
         self.show_help = True
+        
+        # 攻击效果
+        self.attack_effects: List[dict] = []  # [{x, y, time, player_id}]
     
     def render(self, simulator: LocalGameSimulator, extra_info: dict = None):
         """渲染游戏画面"""
@@ -204,6 +252,9 @@ class GameRenderer:
         # 绘制网格
         if self.show_grid:
             self._draw_grid()
+        
+        # 绘制攻击效果
+        self._draw_attack_effects()
         
         # 绘制玩家
         for player_id in range(simulator.config.player_count):
@@ -217,6 +268,35 @@ class GameRenderer:
             self._draw_help()
         
         pygame.display.flip()
+    
+    def _draw_attack_effects(self):
+        """绘制攻击效果"""
+        current_time = time.time() * 1000
+        # 清理过期效果
+        self.attack_effects = [e for e in self.attack_effects 
+                               if current_time - e['time'] < 200]
+        
+        for effect in self.attack_effects:
+            age = current_time - effect['time']
+            alpha = max(0, 255 - int(age * 1.275))  # 渐隐
+            
+            # 攻击范围圆
+            radius = int(self.config.attack_range * (1 + age / 200))
+            color = PLAYER_COLORS[effect['player_id'] % len(PLAYER_COLORS)]
+            
+            # 创建带透明度的表面
+            surface = pygame.Surface((radius * 2, radius * 2), pygame.SRCALPHA)
+            pygame.draw.circle(surface, (*color, alpha // 2), (radius, radius), radius, 3)
+            self.screen.blit(surface, (int(effect['x'] - radius), int(effect['y'] - radius)))
+    
+    def add_attack_effect(self, x: float, y: float, player_id: int):
+        """添加攻击效果"""
+        self.attack_effects.append({
+            'x': x,
+            'y': y,
+            'time': time.time() * 1000,
+            'player_id': player_id
+        })
     
     def _draw_grid(self):
         """绘制背景网格"""
@@ -397,6 +477,12 @@ class DemoGame:
         extra_info = {
             'Status': 'PAUSED' if self.paused else 'RUNNING',
         }
+        
+        # 添加攻击效果到渲染器
+        for attack in self.simulator.get_last_attacks():
+            self.renderer.add_attack_effect(
+                attack['x'], attack['y'], attack['attacker_id']
+            )
         
         self.renderer.render(self.simulator, extra_info)
     
