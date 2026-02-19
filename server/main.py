@@ -184,7 +184,7 @@ class GameServer:
             logger.info("Server started")
             await self._wait_shutdown()
     
-    async def _handle_connection(self, websocket, path):
+    async def _handle_connection(self, websocket, path=None):
         """处理客户端连接"""
         player_id = None
         ws_id = str(id(websocket))
