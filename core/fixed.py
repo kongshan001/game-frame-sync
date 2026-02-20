@@ -19,6 +19,9 @@
     # 转换
     float_val = z.to_float()
     int_val = z.to_int()
+    
+    # 从配置文件加载精度
+    FixedPoint.configure(fraction_bits=16)  # 或从 config.json 读取
 """
 
 from dataclasses import dataclass
@@ -59,9 +62,28 @@ class FixedPoint:
     FRACTION_BITS: ClassVar[int] = 16
     # ===================================
     
-    SCALE: ClassVar[int] = 1 << FRACTION_BITS  # 自动计算
+    SCALE: ClassVar[int] = 1 << 16  # 初始值，会被 configure 更新
     MAX_VALUE: ClassVar[int] = (1 << 31) - 1
     MIN_VALUE: ClassVar[int] = -(1 << 31)
+    
+    @classmethod
+    def configure(cls, fraction_bits: int):
+        """
+        配置定点数精度
+        
+        Args:
+            fraction_bits: 小数位数
+        
+        示例:
+            >>> FixedPoint.configure(16)  # 16.16 格式
+            >>> FixedPoint.configure(8)   # 24.8 格式
+        """
+        if fraction_bits < 1 or fraction_bits > 30:
+            raise ValueError(f"fraction_bits must be 1-30, got {fraction_bits}")
+        
+        cls.FRACTION_BITS = fraction_bits
+        cls.SCALE = 1 << fraction_bits
+        print(f"[FixedPoint] 已配置: {32 - fraction_bits}.{fraction_bits} 格式, SCALE={cls.SCALE}")
     
     raw: int = 0
     

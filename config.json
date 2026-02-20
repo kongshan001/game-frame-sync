@@ -1,0 +1,37 @@
+{
+  "physics": {
+    "gravity": 980.0,
+    "friction": 0.9,
+    "max_velocity": 1000.0,
+    "world_width": 1920.0,
+    "world_height": 1080.0,
+    "entity_width": 32.0,
+    "entity_height": 32.0,
+    "grid_cell_size": 64.0
+  },
+  "network": {
+    "frame_rate": 30,
+    "buffer_size": 3,
+    "server_port": 8765,
+    "auth_timeout": 5.0,
+    "ping_interval": 20.0,
+    "ping_timeout": 10.0,
+    "max_requests_per_second": 100,
+    "max_frame_ahead": 100
+  },
+  "game": {
+    "player_count": 2,
+    "max_players_per_room": 4,
+    "player_speed": 300.0,
+    "attack_range": 60.0,
+    "attack_damage": 10,
+    "default_hp": 100
+  },
+  "history": {
+    "max_frame_history": 300,
+    "max_snapshots": 60
+  },
+  "fixed_point": {
+    "fraction_bits": 16
+  }
+}

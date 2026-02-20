@@ -17,7 +17,10 @@ from typing import Dict, List, Optional, Tuple, Union
 import math
 
 from .fixed import fixed, FixedPoint
-from .config import CONFIG
+from .config import CONFIG, _ensure_config_loaded
+
+# 确保配置已加载
+_ensure_config_loaded()
 
 
 @dataclass
